@@ -101,7 +101,7 @@ void mmc_run_cl(mcconfig* cfg, tetmesh* mesh, raytracer* tracer) {
     float*     Pdet = NULL;
     RandType*  Pphotonseed = NULL;
     char opt[MAX_PATH_LENGTH + 1] = {'\0'};
-    cl_uint detreclen = (2 + ((cfg->ismomentum) > 0)) * mesh->prop + (cfg->issaveexit > 0) * 6 + 1;
+    cl_uint detreclen = 6; // (2 + ((cfg->ismomentum) > 0)) * mesh->prop + (cfg->issaveexit > 0) * 7 + 1;
     cl_uint hostdetreclen = detreclen + 1;
     int sharedmemsize = 0;
 
@@ -542,6 +542,9 @@ void mmc_run_cl(mcconfig* cfg, tetmesh* mesh, raytracer* tracer) {
         OCL_ASSERT((clSetKernelArg(mcxkernel[i], 24, sizeof(cl_mem), ((cfg->debuglevel & dlTraj) ? (void*)(gdebugdata + i) : NULL) )));
     }
 
+    printf("ASFs %u\n", workdev);
+    printf("%u\n", gpu[devid].autothread);
+    
     MMC_FPRINTF(cfg->flog, "set kernel arguments complete : %d ms %d\n", GetTimeMillis() - tic, param.method);
     mcx_fflush(cfg->flog);
 
@@ -588,17 +591,31 @@ void mmc_run_cl(mcconfig* cfg, tetmesh* mesh, raytracer* tracer) {
             param.tend = twindow1;
 
             for (devid = 0; devid < workdev; devid++) {
+                 printf("B\n");
+
                 OCL_ASSERT((clEnqueueWriteBuffer(mcxqueue[devid], gparam[devid], CL_TRUE, 0, sizeof(MCXParam), &param, 0, NULL, NULL)));
+                 printf("E\n");
+
                 OCL_ASSERT((clSetKernelArg(mcxkernel[devid], 2, sizeof(cl_mem), (void*)(gparam + devid))));
+
+             printf("C\n");
 
                 // launch mcxkernel
 #ifndef USE_OS_TIMER
+                printf("Global: %zu, Local: %zu\n", gpu[devid].autothread, gpu[devid].autoblock);
                 OCL_ASSERT((clEnqueueNDRangeKernel(mcxqueue[devid], mcxkernel[devid], 1, NULL, &gpu[devid].autothread, &gpu[devid].autoblock, 0, NULL, &kernelevent)));
+                printf("G\n");
 #else
                 OCL_ASSERT((clEnqueueNDRangeKernel(mcxqueue[devid], mcxkernel[devid], 1, NULL, &gpu[devid].autothread, &gpu[devid].autoblock, 0, NULL, &waittoread[devid])));
+                printf("F\n");
 #endif
+
                 OCL_ASSERT((clFlush(mcxqueue[devid])));
+
+                printf("A\n");
             }
+            
+            printf("DONEEE\n");
 
             if ((cfg->debuglevel & MCX_DEBUG_PROGRESS)) {
                 int p0 = 0, ndone = -1;
@@ -629,7 +646,7 @@ void mmc_run_cl(mcconfig* cfg, tetmesh* mesh, raytracer* tracer) {
 
             tic1 = GetTimeMillis();
             toc += tic1 - tic0;
-            MMC_FPRINTF(cfg->flog, "kernel complete:  \t%d ms\nretrieving flux ... \t", tic1 - tic);
+            MMC_FPRINTF(cfg->flog, "kernel completeteto:  \t%d ms\nretrieving flux ... \t", tic1 - tic);
             mcx_fflush(cfg->flog);
 
             if (cfg->runtime < tic1 - tic) {
@@ -817,7 +834,7 @@ is more than what your have specified (%d), please use the -H option to specify 
         cfg->his.unitinmm = cfg->unitinmm;
         cfg->his.savedphoton = cfg->detectedcount;
         cfg->his.detected = cfg->detectedcount;
-        cfg->his.colcount = (2 + (cfg->ismomentum > 0)) * cfg->his.maxmedia + (cfg->issaveexit > 0) * 6 + 2; /*column count=maxmedia+3*/
+        cfg->his.colcount = 7; //(2 + (cfg->ismomentum > 0)) * cfg->his.maxmedia + (cfg->issaveexit > 0) * 6 + 2; /*column count=maxmedia+3*/
         mesh_savedetphoton(cfg->exportdetected, (void*)(cfg->exportseed), cfg->detectedcount, (sizeof(RandType)*RAND_BUF_LEN), cfg);
     }
 

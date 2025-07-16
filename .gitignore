@@ -1,0 +1,7 @@
+src/built/*
+src/zmat/*
+*.cl
+*.clh
+bin/*
+src/lib
+.vscode

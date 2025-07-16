@@ -517,6 +517,11 @@ __device__ void savedetphoton(__global float* n_det, __global uint* detectedphot
     uint detid = (extdetid < 0) ? finddetector(&(r->p0), (__constant float4*)gmed, gcfg) : extdetid;
 
     if (detid) {
+        //if (r->vec.z > 0.99)
+        //{
+        //    printf("Should not happen: %.2f %.2f %.2f | %.2f %.2f %.2f \n",r->p0.x,r->p0.y,r->p0.z, r->vec.x,r->vec.y,r->vec.z);
+        //}
+
         uint baseaddr = atomic_inc(detectedphoton);
 
         if (baseaddr < GPU_PARAM(gcfg, maxdetphoton)) {
@@ -537,27 +542,17 @@ __device__ void savedetphoton(__global float* n_det, __global uint* detectedphot
 #endif
 
 #endif
-            baseaddr *= (GPU_PARAM(gcfg, reclen) + 1);
-            n_det[baseaddr++] = detid;
-
-            for (i = 0; i < (GPU_PARAM(gcfg, maxmedia) << 1); i++) {
-                n_det[baseaddr++] = ppath[i];    // save partial pathlength to the memory
-            }
-
-            for (i = 0; i < GPU_PARAM(gcfg, ismomentum)*GPU_PARAM(gcfg, maxmedia); i++) {
-                n_det[baseaddr++] = ppath[i + (GPU_PARAM(gcfg, maxmedia) << 1)];    // save partial pathlength to the memory
-            }
+            baseaddr *= 7;
 
             if (GPU_PARAM(gcfg, issaveexit)) {
                 n_det[baseaddr++] = r->p0.x;
                 n_det[baseaddr++] = r->p0.y;
                 n_det[baseaddr++] = r->p0.z;
+                n_det[baseaddr++] = r->weight;
                 n_det[baseaddr++] = r->vec.x;
                 n_det[baseaddr++] = r->vec.y;
                 n_det[baseaddr++] = r->vec.z;
             }
-
-            n_det[baseaddr++] = ppath[GPU_PARAM(gcfg, reclen) - 1]; // save partial pathlength to the memory
         }
     }
 }
@@ -1560,7 +1555,21 @@ __device__ void onephoton(unsigned int id, __local float* ppath, __constant MCXP
 #endif
 
         /*move a photon until the end of the current scattering path*/
+        // Might cause an infinite loop
+        int b = 0;
         while (r.faceid >= 0 && !r.isend) {
+            b++;
+            if (b > 995)
+            {
+                printf("Photon is stuck here for a long time... %.2f %.2f %.2f | %.2f %.2f %.2f \n",r.p0.x,r.p0.y,r.p0.z, r.vec.x,r.vec.y,r.vec.z);
+            }
+
+            if (b > 1000)
+            {
+                printf("Aborting loop\n");
+                break;
+            }
+
             r.p0 = r.pout;
 
             oldeid = r.eid;

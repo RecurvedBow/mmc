@@ -1592,12 +1592,12 @@ void mesh_savedetphoton(float* ppath, void* seeds, int count, int seedbyte, mcco
             memcpy(cfg->exportdetected, ppath, count * cfg->his.colcount * sizeof(float));
         }
     */
-    fwrite(&(cfg->his), sizeof(history), 1, fp);
+    //fwrite(&(cfg->his), sizeof(history), 1, fp);
     fwrite(ppath, sizeof(float), count * cfg->his.colcount, fp);
 
-    if (cfg->issaveseed && seeds != NULL) {
-        fwrite(seeds, seedbyte, count, fp);
-    }
+    //if (cfg->issaveseed && seeds != NULL) {
+    //    fwrite(seeds, seedbyte, count, fp);
+    //}
 
     fclose(fp);
 }
