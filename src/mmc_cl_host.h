@@ -101,6 +101,13 @@ typedef struct PRE_ALIGN(32) GPU_mcconfig {
     cl_int    issaveseed;
     cl_uint   seed;
     cl_uint   maxjumpdebug;         /**< max number of positions to be saved to save photon trajectory when -D M is used */
+    cl_float cam_obj_dist; 
+    cl_float cam_proj_dist;
+    cl_float cam_focal_length;
+    cl_float cam_aperture_radius;
+    cl_uint cam_image_height;          /**< The camera image height.*/
+    cl_uint cam_image_width;           /**< The camera image width.*/
+    cl_float cam_pixel_pitch;         /**< How many mm a pixel represents.*/
 } MCXParam POST_ALIGN(32);
 
 typedef struct POST_ALIGN(32) GPU_reporter {

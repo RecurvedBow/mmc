@@ -145,6 +145,7 @@ float mesh_normalize(tetmesh* mesh, mcconfig* cfg, float Eabsorb, float Etotal, 
 void mesh_build(tetmesh* mesh);
 void mesh_error(const char* msg, const char* file, const int linenum);
 void mesh_filenames(const char* format, char* foutput, mcconfig* cfg);
+void mcx_savecamsignals(float* camsignals, size_t len, mcconfig* cfg);
 void mesh_saveweight(tetmesh* mesh, mcconfig* cfg, int isref);
 void mesh_savedetphoton(float* ppath, void* seeds, int count, int seedbyte, mcconfig* cfg);
 void mesh_getdetimage(float* detmap, float* ppath, int count, mcconfig* cfg, tetmesh* mesh);

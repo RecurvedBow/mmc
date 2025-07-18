@@ -348,6 +348,13 @@ void mcx_initcfg(mcconfig* cfg) {
 #else
     cfg->parentid = mpStandalone;
 #endif
+    cfg->cam_focal_length = -1;
+    cfg->cam_obj_dist = -1;
+    cfg->cam_proj_dist = -1;
+    cfg->cam_aperture_radius = -1;
+    cfg->cam_image_height = -1;
+    cfg->cam_image_width = -1;
+    cfg->cam_pixel_pitch = -1;
 }
 
 /**
@@ -1269,7 +1276,7 @@ int mcx_loadfromjson(char* jbuf, mcconfig* cfg) {
 
 int mcx_loadjson(cJSON* root, mcconfig* cfg) {
     int i;
-    cJSON* Mesh, *Optode, *Forward, *Session, *Domain, *tmp, *subitem;
+    cJSON* Mesh, *Optode, *Forward, *Session, *Domain, *Camera, *tmp, *subitem;
 
     Mesh    = cJSON_GetObjectItem(root, "Mesh");
 
@@ -1281,6 +1288,23 @@ int mcx_loadjson(cJSON* root, mcconfig* cfg) {
     Session = cJSON_GetObjectItem(root, "Session");
     Forward = cJSON_GetObjectItem(root, "Forward");
     Domain  = cJSON_GetObjectItem(root, "Domain");
+    Camera  = cJSON_GetObjectItem(root, "Camera");
+
+    if (Camera)
+    {
+        cfg->cam_obj_dist = FIND_JSON_KEY("ObjectDistance", "Camera.ObjectDistance", Camera, cfg->cam_obj_dist, valuedouble);
+        cfg->cam_focal_length = FIND_JSON_KEY("FocalLength", "Camera.FocalLength", Camera, cfg->cam_focal_length, valuedouble);
+        cfg->cam_proj_dist = FIND_JSON_KEY("ProjectionDistance", "Camera.ProjectionDistance", Camera, cfg->cam_proj_dist, valuedouble);
+        cfg->cam_aperture_radius = FIND_JSON_KEY("ApertureRadius", "Camera.ApertureRadius", Camera, cfg->cam_aperture_radius, valuedouble);
+        cfg->cam_image_height = FIND_JSON_KEY("Height", "Camera.Height", Camera, cfg->cam_image_height, valueint);
+        cfg->cam_image_width = FIND_JSON_KEY("Width", "Camera.Width", Camera, cfg->cam_image_width, valueint);
+        cfg->cam_pixel_pitch = FIND_JSON_KEY("PixelPitch", "Camera.PixelPitch", Camera, cfg->cam_pixel_pitch, valueint);
+
+        if (cfg->cam_obj_dist <= 0 || cfg->cam_focal_length <= 0 || cfg->cam_proj_dist <= 0 || cfg->cam_aperture_radius <= 0 || cfg->cam_image_height <= 0 || cfg->cam_image_width <= 0 || cfg->cam_pixel_pitch <= 0) {
+                MMC_ERROR(-1, "Missing or invalid camera parameters!");
+            }
+
+    }
 
     if (Mesh) {
         subitem = FIND_JSON_OBJ("MeshID", "Mesh.MeshID", Mesh);

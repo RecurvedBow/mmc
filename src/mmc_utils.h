@@ -300,6 +300,13 @@ typedef struct MMC_config {
     enum TROIType roitype;         /**<mesh roi type: rtNone: unknown, rtEdge: edge-roi, rtNode: node-roi, rtFace: face-roi */
     float* roidata;                /**<mesh roi (edge/node/face) data*/
     char jsonfile[MAX_PATH_LENGTH];/**<if the seed is specified as a file (mch), mcx will replay the photons*/
+    float cam_obj_dist;            /**< Distance from modeled camera lens to object in voxel units*/
+    float cam_proj_dist;           /**< Distance from modeled camera sensor to camera lens in voxel units*/
+    float cam_focal_length;        /**< Cam focal length in voxel units*/
+    float cam_aperture_radius;     /**< Camera aperture size in voxel units*/
+    int cam_image_height;          /**< The camera image height.*/
+    int cam_image_width;           /**< The camera image width.*/
+    float cam_pixel_pitch;         /**< How many mm a pixel represents.*/
 } mcconfig;
 
 #ifdef  __cplusplus

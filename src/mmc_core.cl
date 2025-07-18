@@ -339,6 +339,13 @@ typedef struct MMC_Parameter {
     int    issaveseed;
     int    seed;
     uint   maxjumpdebug;          /**< max number of positions to be saved to save photon trajectory when -D M is used */
+    float cam_obj_dist; 
+    float cam_proj_dist;
+    float cam_focal_length;
+    float cam_aperture_radius;
+    int cam_image_width;
+    int cam_image_height;
+    float cam_pixel_pitch;
 } MCXParam __attribute__ ((aligned (16)));
 
 typedef struct MMC_Reporter {
@@ -511,16 +518,116 @@ __device__ uint finddetector(float3* p0, __constant float4* gmed, __constant MCX
     return 0;
 }
 
-__device__ void savedetphoton(__global float* n_det, __global uint* detectedphoton,
+
+__device__ void map_photon_to_camera_sensor(__constant MCXParam* gcfg, __global float* camsignals, ray r)
+{
+    float3 p0 = r.p0;
+    float3 v = r.vec;
+    float w = r.weight;
+
+    if (gcfg->cam_focal_length < 0 || gcfg->cam_obj_dist < 0 || gcfg->cam_proj_dist < 0 || gcfg->cam_aperture_radius < 0)
+    {
+        return;
+    }
+
+    if (v.z >= 0)
+    {
+        // Wrong z-Direction
+        return;
+    }
+
+    uint dim_x = gcfg->cam_image_width;
+    uint dim_y = gcfg->cam_image_height;
+    uint amount_pixels = gcfg->cam_image_width * gcfg->cam_image_height;
+
+    camsignals[amount_pixels]++;
+
+    // Normalize direction vector.
+    float tmp0 = rsqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+    v.x *= tmp0;
+    v.y *= tmp0;
+    v.z *= tmp0;
+
+    float lens_magnification = -gcfg->cam_proj_dist / gcfg->cam_obj_dist;
+
+    // Project photon to lens.
+    float t_lens = (gcfg->cam_obj_dist + p0.z) / fabs(p0.z);
+    float2 p_on_lens = {
+        p0.x + v.x * t_lens,
+        p0.y + v.y * t_lens
+    };
+    
+    // Todo: Check if x refers to width or height.
+    float2 lens_center = {dim_x / 2.f, dim_y / 2.f};
+
+    float2 distance_p_on_lens_to_lens_center = {
+        p_on_lens.x - lens_center.x,
+        p_on_lens.y - lens_center.y
+    };
+    float squared_distance_p_on_lens_to_lens_center = distance_p_on_lens_to_lens_center.x * distance_p_on_lens_to_lens_center.x + distance_p_on_lens_to_lens_center.y * distance_p_on_lens_to_lens_center.y;
+    if (squared_distance_p_on_lens_to_lens_center > gcfg->cam_aperture_radius * gcfg->cam_aperture_radius)
+    {
+        // Outside of the lens aperture
+        return;
+    }
+
+    float3 v_after_lens = {
+        v.x - distance_p_on_lens_to_lens_center.x * fabs(v.z) / gcfg->cam_focal_length,
+        v.y - distance_p_on_lens_to_lens_center.y * fabs(v.z) / gcfg->cam_focal_length,
+        v.z
+    };
+
+    // Project photon to sensor
+    float t_sensor = gcfg->cam_proj_dist / fabs(v_after_lens.z);
+    float2 p_on_sensor = {
+        p_on_lens.x + v_after_lens.x * t_sensor,
+        p_on_lens.y + v_after_lens.y * t_sensor
+    };
+
+    //Apply magnification on projected photon position on sensor
+    float2 sensor_center = lens_center;
+    float2 p_on_sensor_shifted = {
+        p_on_sensor.x - sensor_center.x,
+        p_on_sensor.y - sensor_center.y
+    };
+    float2 p_on_sensor_corrected = {
+        p_on_sensor_shifted.x / lens_magnification + sensor_center.x,
+        p_on_sensor_shifted.y / lens_magnification + sensor_center.y,
+    };
+
+    int voxel_x = floor(p_on_sensor_corrected.x);
+    int voxel_y = floor(p_on_sensor_corrected.y);
+
+    if (voxel_x < 0 || voxel_x >= dim_x || voxel_y < 0 || voxel_y >= dim_y)
+    {
+        return;
+    }
+    
+    int index = dim_x * voxel_y + voxel_x;
+
+    if (index >= amount_pixels)
+    {
+        printf("IndexOutOfRangeException: The index %u was outside the array part for storing camera intensity of size %u.\n", index, amount_pixels);
+        return;
+    }
+
+    camsignals[index] += w;
+    // camsignals[amount_pixels + 1]++;
+}
+
+
+__device__ void savedetphoton(__global float* n_det, __global float* camsignals, __global uint* detectedphoton,
                               __local float* ppath, ray* r, __constant Medium* gmed,
                               int extdetid, __constant MCXParam* gcfg, __global RandType* photonseed, RandType* initseed) {
     uint detid = (extdetid < 0) ? finddetector(&(r->p0), (__constant float4*)gmed, gcfg) : extdetid;
 
-    if (detid) {
+    if (detid && r->vec.z < 0) {
         //if (r->vec.z > 0.99)
         //{
         //    printf("Should not happen: %.2f %.2f %.2f | %.2f %.2f %.2f \n",r->p0.x,r->p0.y,r->p0.z, r->vec.x,r->vec.y,r->vec.z);
         //}
+        camsignals[gcfg->cam_image_width * gcfg->cam_image_height + 1]++;
+        map_photon_to_camera_sensor(gcfg, camsignals, *r);
 
         uint baseaddr = atomic_inc(detectedphoton);
 
@@ -1455,7 +1562,7 @@ __device__ void launchnewphoton(__constant MCXParam* gcfg, ray* r, __global FLOA
  * \param[out] visit: statistics counters of this thread
  */
 
-__device__ void onephoton(unsigned int id, __local float* ppath, __constant MCXParam* gcfg, __global FLOAT3* node, __global int* elem, __global float* weight, __global float* dref,
+__device__ void onephoton(unsigned int id, __local float* ppath, __constant MCXParam* gcfg, __global FLOAT3* node, __global int* elem, __global float* weight, __global float* dref, __global float* camsignals,
                           __global int* type, __global int* facenb,  __global int* srcelem, __global float4* normal, __constant Medium* gmed,
                           __global float* n_det, __global uint* detectedphoton, __local float* energytot, __local float* energyesc, __private RandType* ran, int* raytet, __global float* srcpattern,
                           __global float* replayweight, __global float* replaytime, __global RandType* photonseed, __global MCXReporter* reporter, __global float* gdebugdata) {
@@ -1556,15 +1663,15 @@ __device__ void onephoton(unsigned int id, __local float* ppath, __constant MCXP
 
         /*move a photon until the end of the current scattering path*/
         // Might cause an infinite loop
-        int b = 0;
+        int iteration_idx = 0;
         while (r.faceid >= 0 && !r.isend) {
-            b++;
-            if (b > 995)
+            iteration_idx++;
+            if (iteration_idx > 997)
             {
                 printf("Photon is stuck here for a long time... %.2f %.2f %.2f | %.2f %.2f %.2f \n",r.p0.x,r.p0.y,r.p0.z, r.vec.x,r.vec.y,r.vec.z);
             }
 
-            if (b > 1000)
+            if (iteration_idx > 1000)
             {
                 printf("Aborting loop\n");
                 break;
@@ -1652,6 +1759,11 @@ __device__ void onephoton(unsigned int id, __local float* ppath, __constant MCXP
             }
         }
 
+        if (iteration_idx > 1000)
+        {
+            break;
+        }
+
         if (r.eid <= 0 || r.pout.x == MMC_UNDEFINED) {
             //if(r.eid==0 && (GPU_PARAM(gcfg,debuglevel)&dlMove))
             GPUDEBUG(("B %f %f %f %d %u %e\n", r.p0.x, r.p0.y, r.p0.z, r.eid, id, r.slen));
@@ -1683,6 +1795,7 @@ __device__ void onephoton(unsigned int id, __local float* ppath, __constant MCXP
             }
 
 #if defined(MCX_SAVE_DETECTORS) || defined(__NVCC__)
+
 #ifdef __NVCC__
 
             if (GPU_PARAM(gcfg, issavedet)) {
@@ -1691,9 +1804,9 @@ __device__ void onephoton(unsigned int id, __local float* ppath, __constant MCXP
                 if (r.eid <= 0) {
 
 #if defined(MCX_SAVE_SEED) || defined(__NVCC__)
-                    savedetphoton(n_det, detectedphoton, ppath, &r, gmed, ((GPU_PARAM(gcfg, isextdet) && type[oldeid - 1] == GPU_PARAM(gcfg, maxmedia) + 1) ? oldeid : -1), gcfg, photonseed, initseed);
+                    savedetphoton(n_det, camsignals, detectedphoton, ppath, &r, gmed, ((GPU_PARAM(gcfg, isextdet) && type[oldeid - 1] == GPU_PARAM(gcfg, maxmedia) + 1) ? oldeid : -1), gcfg, photonseed, initseed);
 #else
-                    savedetphoton(n_det, detectedphoton, ppath, &r, gmed, ((GPU_PARAM(gcfg, isextdet) && type[oldeid - 1] == GPU_PARAM(gcfg, maxmedia) + 1) ? oldeid : -1), gcfg, photonseed, NULL);
+                    savedetphoton(n_det, camsignals, detectedphoton, ppath, &r, gmed, ((GPU_PARAM(gcfg, isextdet) && type[oldeid - 1] == GPU_PARAM(gcfg, maxmedia) + 1) ? oldeid : -1), gcfg, photonseed, NULL);
 #endif
                 }
 
@@ -1703,6 +1816,7 @@ __device__ void onephoton(unsigned int id, __local float* ppath, __constant MCXP
 #endif
 
 #endif
+
             break;  /*photon exits boundary*/
         }
 
@@ -1759,7 +1873,7 @@ __kernel void mmc_main_loop(const int nphoton, const int ophoton,
 #ifndef __NVCC__
     __constant__ MCXParam* gcfg, __local float* sharedmem, __constant__ Medium* gmed,
 #endif
-                            __global FLOAT3* node, __global int* elem,  __global float* weight, __global float* dref, __global int* type, __global int* facenb,  __global int* srcelem, __global float4* normal,
+                            __global FLOAT3* node, __global int* elem,  __global float* weight, __global float* dref, __global float* camsignals, __global int* type, __global int* facenb,  __global int* srcelem, __global float4* normal,
                             __global float* n_det, __global uint* detectedphoton,
                             __global uint* n_seed, __global int* progress, __global float* energy, __global MCXReporter* reporter, __global float* srcpattern,
                             __global float* replayweight, __global float* replaytime, __global RandType* replayseed, __global RandType* photonseed, __global float* gdebugdata) {
@@ -1785,7 +1899,7 @@ __kernel void mmc_main_loop(const int nphoton, const int ophoton,
 
         onephoton(idx * nphoton + MIN(idx, ophoton) + i, sharedmem + get_local_size(0) * (GPU_PARAM(gcfg, srcnum) << 1) +
                   get_local_id(0) * (GPU_PARAM(gcfg, reclen) + (GPU_PARAM(gcfg, srcnum) > 1) * GPU_PARAM(gcfg, srcnum)), gcfg, node, elem,
-                  weight, dref, type, facenb, srcelem, normal, gmed, n_det, detectedphoton, sharedmem + get_local_id(0) * GPU_PARAM(gcfg, srcnum),
+                  weight, dref, camsignals, type, facenb, srcelem, normal, gmed, n_det, detectedphoton, sharedmem + get_local_id(0) * GPU_PARAM(gcfg, srcnum),
                   sharedmem + (get_local_size(0) + get_local_id(0)) * GPU_PARAM(gcfg, srcnum), t, &raytet,
                   srcpattern, replayweight, replaytime, photonseed, reporter, gdebugdata);
     }

@@ -1478,6 +1478,20 @@ float mc_next_scatter(float g, float3* dir, RandType* ran, RandType* ran0, mccon
 
 #ifndef MCX_CONTAINER
 
+void mcx_savecamsignals(float* camsignals, size_t len, mcconfig* cfg)
+{
+    char* file_suffix = ".bin";
+    size_t filepathlen = strlen(cfg->session) + strlen(file_suffix) + 1;
+    char* filepath = malloc(filepathlen);
+
+    strcpy(filepath, cfg->session);
+    strcat(filepath, file_suffix);
+
+    FILE *f = fopen(filepath, "wb");
+    fwrite(camsignals, sizeof(float), len, f);
+    fclose(f);
+}
+
 /**
  * @brief Save the fluence output to a file
  *

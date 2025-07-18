@@ -89,19 +89,19 @@ void mmc_run_cl(mcconfig* cfg, tetmesh* mesh, raytracer* tracer) {
     cl_uint  devid = 0;
     cl_mem* gnode = NULL, *gelem = NULL, *gtype = NULL, *gfacenb = NULL, *gsrcelem = NULL, *gnormal = NULL;
     cl_mem* gproperty = NULL, *gparam = NULL, *gsrcpattern = NULL, *greplayweight = NULL, *greplaytime = NULL, *greplayseed = NULL; /*read-only buffers*/
-    cl_mem* gweight, *gdref, *gdetphoton, *gseed, *genergy, *greporter, *gdebugdata;     /*read-write buffers*/
+    cl_mem* gweight, *gdref, *gdetphoton, *gseed, *genergy, *greporter, *gdebugdata, *gcamsignals;     /*read-write buffers*/
     cl_mem* gprogress = NULL, *gdetected = NULL, *gphotonseed = NULL; /*write-only buffers*/
 
     cl_uint meshlen = ((cfg->method == rtBLBadouelGrid) ? cfg->crop0.z : mesh->ne) * cfg->srcnum;    /**< total output data length in float count per time-frame */
     cfg->crop0.w = meshlen * cfg->maxgate;    /**< total output data length, before double-buffer expansion */
 
-    cl_float*  field, *dref = NULL;
+    cl_float*  field, *dref = NULL, *camsignals = NULL;
 
     cl_uint*   Pseed = NULL;
     float*     Pdet = NULL;
     RandType*  Pphotonseed = NULL;
     char opt[MAX_PATH_LENGTH + 1] = {'\0'};
-    cl_uint detreclen = 6; // (2 + ((cfg->ismomentum) > 0)) * mesh->prop + (cfg->issaveexit > 0) * 7 + 1;
+    cl_uint detreclen = (cfg->issaveexit > 0) * 7; // (2 + ((cfg->ismomentum) > 0)) * mesh->prop + (cfg->issaveexit > 0) * 7 + 1;
     cl_uint hostdetreclen = detreclen + 1;
     int sharedmemsize = 0;
 
@@ -127,7 +127,7 @@ void mmc_run_cl(mcconfig* cfg, tetmesh* mesh, raytracer* tracer) {
         mesh->srcelemlen, {{cfg->bary0.x, cfg->bary0.y, cfg->bary0.z, cfg->bary0.w}},
         cfg->e0, cfg->isextdet, (meshlen / cfg->srcnum), (mesh->prop + 1 + cfg->isextdet) + cfg->detnum,
         (MIN((MAX_PROP - param.maxpropdet), ((mesh->ne) << 2)) >> 2), /*max count of elem normal data in const mem*/
-        cfg->issaveseed, cfg->seed, cfg->maxjumpdebug
+        cfg->issaveseed, cfg->seed, cfg->maxjumpdebug, cfg->cam_obj_dist, cfg->cam_proj_dist, cfg->cam_focal_length, cfg->cam_aperture_radius, cfg->cam_image_height, cfg->cam_image_width, cfg->cam_pixel_pitch
     };
 
     MCXReporter reporter = {0.f, 0};
@@ -165,6 +165,7 @@ void mmc_run_cl(mcconfig* cfg, tetmesh* mesh, raytracer* tracer) {
     gseed = (cl_mem*)malloc(workdev * sizeof(cl_mem));
     gweight = (cl_mem*)malloc(workdev * sizeof(cl_mem));
     gdref = (cl_mem*)malloc(workdev * sizeof(cl_mem));
+    gcamsignals = (cl_mem*)malloc(workdev * sizeof(cl_mem));
     gdetphoton = (cl_mem*)malloc(workdev * sizeof(cl_mem));
     genergy = (cl_mem*)malloc(workdev * sizeof(cl_mem));
     gdetected = (cl_mem*)malloc(workdev * sizeof(cl_mem));
@@ -191,6 +192,7 @@ void mmc_run_cl(mcconfig* cfg, tetmesh* mesh, raytracer* tracer) {
     cl_command_queue_properties prop = CL_QUEUE_PROFILING_ENABLE;
 
     totalcucore = 0;
+    int camsignals_size = cfg->cam_image_width * cfg->cam_image_height + 2;
 
     for (i = 0; i < workdev; i++) {
         OCL_ASSERT(((mcxqueue[i] = clCreateCommandQueue(mcxcontext, devices[i], prop, &status), status)));
@@ -253,6 +255,7 @@ void mmc_run_cl(mcconfig* cfg, tetmesh* mesh, raytracer* tracer) {
 
     field = (cl_float*)calloc(sizeof(cl_float) * meshlen * 2, cfg->maxgate);
     dref = (cl_float*)calloc(sizeof(cl_float) * mesh->nf, cfg->maxgate);
+    camsignals = (cl_float*)calloc(sizeof(cl_float) * camsignals_size, cfg->maxgate);
     Pdet = (float*)calloc(cfg->maxdetphoton * sizeof(float), hostdetreclen);
 
     if (cfg->issaveseed) {
@@ -322,6 +325,7 @@ void mmc_run_cl(mcconfig* cfg, tetmesh* mesh, raytracer* tracer) {
         OCL_ASSERT(((gseed[i] = clCreateBuffer(mcxcontext, RW_MEM, sizeof(cl_uint) * gpu[i].autothread * RAND_SEED_WORD_LEN, Pseed, &status), status)));
         OCL_ASSERT(((gweight[i] = clCreateBuffer(mcxcontext, RW_MEM, sizeof(float) * fieldlen * 2, field, &status), status)));
         OCL_ASSERT(((gdref[i] = clCreateBuffer(mcxcontext, RW_MEM, sizeof(float) * nflen, dref, &status), status)));
+        OCL_ASSERT(((gcamsignals[i] = clCreateBuffer(mcxcontext, RW_MEM, sizeof(float) * camsignals_size, camsignals, &status), status)));
         OCL_ASSERT(((gdetphoton[i] = clCreateBuffer(mcxcontext, RW_MEM, sizeof(float) * cfg->maxdetphoton * hostdetreclen, Pdet, &status), status)));
 
         if (cfg->issaveseed) {
@@ -524,26 +528,24 @@ void mmc_run_cl(mcconfig* cfg, tetmesh* mesh, raytracer* tracer) {
         OCL_ASSERT((clSetKernelArg(mcxkernel[i], 6, sizeof(cl_mem), (void*)(gelem + i))));
         OCL_ASSERT((clSetKernelArg(mcxkernel[i], 7, sizeof(cl_mem), (void*)(gweight + i))));
         OCL_ASSERT((clSetKernelArg(mcxkernel[i], 8, sizeof(cl_mem), (void*)(gdref + i))));
-        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 9, sizeof(cl_mem), (void*)(gtype + i))));
-        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 10, sizeof(cl_mem), (void*)(gfacenb + i))));
-        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 11, sizeof(cl_mem), (void*)(gsrcelem + i))));
-        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 12, sizeof(cl_mem), (void*)(gnormal + i))));
-        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 13, sizeof(cl_mem), (void*)(gdetphoton + i))));
-        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 14, sizeof(cl_mem), (void*)(gdetected + i))));
-        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 15, sizeof(cl_mem), (void*)(gseed + i))));
-        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 16, sizeof(cl_mem), (i == 0) ? ((void*)(gprogress)) : NULL)));
-        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 17, sizeof(cl_mem), (void*)(genergy + i))));
-        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 18, sizeof(cl_mem), (void*)(greporter + i))));
-        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 19, sizeof(cl_mem), (void*)(gsrcpattern + i))));
-        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 20, sizeof(cl_mem), (void*)(greplayweight + i))));
-        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 21, sizeof(cl_mem), (void*)(greplaytime + i))));
-        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 22, sizeof(cl_mem), (void*)(greplayseed + i))));
-        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 23, sizeof(cl_mem), (void*)(gphotonseed + i))));
-        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 24, sizeof(cl_mem), ((cfg->debuglevel & dlTraj) ? (void*)(gdebugdata + i) : NULL) )));
+        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 9, sizeof(cl_mem), (void*)(gcamsignals + i))));
+        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 10, sizeof(cl_mem), (void*)(gtype + i))));
+        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 11, sizeof(cl_mem), (void*)(gfacenb + i))));
+        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 12, sizeof(cl_mem), (void*)(gsrcelem + i))));
+        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 13, sizeof(cl_mem), (void*)(gnormal + i))));
+        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 14, sizeof(cl_mem), (void*)(gdetphoton + i))));
+        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 15, sizeof(cl_mem), (void*)(gdetected + i))));
+        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 16, sizeof(cl_mem), (void*)(gseed + i))));
+        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 17, sizeof(cl_mem), (i == 0) ? ((void*)(gprogress)) : NULL)));
+        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 18, sizeof(cl_mem), (void*)(genergy + i))));
+        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 19, sizeof(cl_mem), (void*)(greporter + i))));
+        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 20, sizeof(cl_mem), (void*)(gsrcpattern + i))));
+        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 21, sizeof(cl_mem), (void*)(greplayweight + i))));
+        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 22, sizeof(cl_mem), (void*)(greplaytime + i))));
+        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 23, sizeof(cl_mem), (void*)(greplayseed + i))));
+        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 24, sizeof(cl_mem), (void*)(gphotonseed + i))));
+        OCL_ASSERT((clSetKernelArg(mcxkernel[i], 25, sizeof(cl_mem), ((cfg->debuglevel & dlTraj) ? (void*)(gdebugdata + i) : NULL) )));
     }
-
-    printf("ASFs %u\n", workdev);
-    printf("%u\n", gpu[devid].autothread);
     
     MMC_FPRINTF(cfg->flog, "set kernel arguments complete : %d ms %d\n", GetTimeMillis() - tic, param.method);
     mcx_fflush(cfg->flog);
@@ -591,31 +593,19 @@ void mmc_run_cl(mcconfig* cfg, tetmesh* mesh, raytracer* tracer) {
             param.tend = twindow1;
 
             for (devid = 0; devid < workdev; devid++) {
-                 printf("B\n");
-
                 OCL_ASSERT((clEnqueueWriteBuffer(mcxqueue[devid], gparam[devid], CL_TRUE, 0, sizeof(MCXParam), &param, 0, NULL, NULL)));
-                 printf("E\n");
-
                 OCL_ASSERT((clSetKernelArg(mcxkernel[devid], 2, sizeof(cl_mem), (void*)(gparam + devid))));
-
-             printf("C\n");
 
                 // launch mcxkernel
 #ifndef USE_OS_TIMER
-                printf("Global: %zu, Local: %zu\n", gpu[devid].autothread, gpu[devid].autoblock);
                 OCL_ASSERT((clEnqueueNDRangeKernel(mcxqueue[devid], mcxkernel[devid], 1, NULL, &gpu[devid].autothread, &gpu[devid].autoblock, 0, NULL, &kernelevent)));
-                printf("G\n");
 #else
                 OCL_ASSERT((clEnqueueNDRangeKernel(mcxqueue[devid], mcxkernel[devid], 1, NULL, &gpu[devid].autothread, &gpu[devid].autoblock, 0, NULL, &waittoread[devid])));
                 printf("F\n");
 #endif
 
                 OCL_ASSERT((clFlush(mcxqueue[devid])));
-
-                printf("A\n");
             }
-            
-            printf("DONEEE\n");
 
             if ((cfg->debuglevel & MCX_DEBUG_PROGRESS)) {
                 int p0 = 0, ndone = -1;
@@ -742,6 +732,18 @@ is more than what your have specified (%d), please use the -H option to specify 
 
                     free(rawdref);
                 }
+                if (cfg->cam_focal_length > 0)
+                {
+                    float* rawcamsignals = (float*)calloc(sizeof(float), camsignals_size);
+                    OCL_ASSERT((clEnqueueReadBuffer(mcxqueue[devid], gcamsignals[devid], CL_TRUE, 0, sizeof(float)*camsignals_size,
+                                                    rawcamsignals, 0, NULL, NULL)));
+
+                    for (i = 0; i < camsignals_size; i++) { //accumulate field, can be done in the GPU
+                        camsignals[i] += rawcamsignals[i];    //+rawfield[i+fieldlen];
+                    }
+
+                    free(rawcamsignals);
+                }
 
                 //handling the 2pt distributions
                 if (cfg->issave2pt) {
@@ -800,11 +802,13 @@ is more than what your have specified (%d), please use the -H option to specify 
         }
     }
 
+    // Todo:
     if (cfg->issaveref && mesh->dref) {
         for (i = 0; i < nflen; i++) {
             mesh->dref[i] += dref[i];
         }
     }
+
 
     if (cfg->isnormalized) {
         double cur_normalizer, sum_normalizer = 0.0, energyabs = 0.0;
@@ -821,6 +825,13 @@ is more than what your have specified (%d), please use the -H option to specify 
     }
 
 #ifndef MCX_CONTAINER
+    if (cfg->cam_focal_length > 0)
+    {
+        MMC_FPRINTF(cfg->flog, "saving cam signals to file ...\t");
+        mcx_savecamsignals(camsignals, camsignals_size, cfg);
+        MMC_FPRINTF(cfg->flog, "saving data complete : %d ms\n\n", GetTimeMillis() - tic);
+        mcx_fflush(cfg->flog);
+    }
 
     if (cfg->issave2pt && cfg->parentid == mpStandalone) {
         MMC_FPRINTF(cfg->flog, "saving data to file ...\t");
@@ -867,6 +878,7 @@ is more than what your have specified (%d), please use the -H option to specify 
         OCL_ASSERT(clReleaseMemObject(gdetphoton[i]));
         OCL_ASSERT(clReleaseMemObject(gweight[i]));
         OCL_ASSERT(clReleaseMemObject(gdref[i]));
+        OCL_ASSERT(clReleaseMemObject(gcamsignals[i]));
         OCL_ASSERT(clReleaseMemObject(genergy[i]));
         OCL_ASSERT(clReleaseMemObject(gdetected[i]));
 
@@ -916,6 +928,7 @@ is more than what your have specified (%d), please use the -H option to specify 
     free(gdetphoton);
     free(gweight);
     free(gdref);
+    free(gcamsignals);
     free(genergy);
     free(gprogress);
     free(gdetected);
@@ -970,4 +983,5 @@ is more than what your have specified (%d), please use the -H option to specify 
     }
 
     free(dref);
+    free(camsignals);
 }
